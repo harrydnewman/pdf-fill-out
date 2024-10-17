@@ -64,17 +64,12 @@ async function splitPdfPages(pdfBytes) {
   return pages; // Array of individual page PDFs with their dimensions
 }
 
-// Function to introduce a delay using setTimeout
-function delay(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
-
 async function convertPdfToImages(filePath) {
   console.log(`Starting PDF to image conversion for file: ${filePath}`);
 
   // Read the PDF
   const pdfBytes = fs.readFileSync(filePath);
-  
+
   // Split the PDF into individual pages
   const pdfPages = await splitPdfPages(pdfBytes);
   console.log(`PDF has ${pdfPages.length} pages.`);
@@ -90,55 +85,63 @@ async function convertPdfToImages(filePath) {
 
   const imagePaths = [];
 
-  for (let i = 0; i < pdfPages.length; i++) {
-    console.log(`Rendering page ${i + 1} of the PDF...`);
+  // Process all pages concurrently
+  const pagePromises = pdfPages.map(async (pdfPage, i) => {
+    const pageIndex = i + 1;
+    const pageData = pdfPage.data;
+    const pageWidth = pdfPage.width;
+    const pageHeight = pdfPage.height;
 
-    const pageData = pdfPages[i].data;
-    const pageWidth = pdfPages[i].width;
-    const pageHeight = pdfPages[i].height;
-
-    // Save each split page as a separate file
-    const pagePath = path.join(outputDir, `page-${i + 1}.pdf`);
+    // Save the page as a separate PDF file
+    const pagePath = path.join(outputDir, `page-${pageIndex}.pdf`);
     fs.writeFileSync(pagePath, pageData);
 
     const screenshotFiles = [];
 
-    for (let round = 1; round <= 3; round++) {
+    // Process 3 rounds of screenshots for the current page concurrently
+    const roundPromises = [1, 2, 3].map(async (round) => {
       const page = await browser.newPage();
 
-      // Set viewport to match the PDF page size and increase the resolution with deviceScaleFactor
+      // Set viewport to match the PDF page size
       await page.setViewport({
-        width: Math.ceil(pageWidth), // Match page width
-        height: Math.ceil(pageHeight), // Match page height
-        deviceScaleFactor: 2 // Increase the scale factor for higher quality
+        width: Math.ceil(pageWidth),
+        height: Math.ceil(pageHeight),
+        deviceScaleFactor: 2
       });
 
-      // Disable default PDF viewer to remove unnecessary elements
+      // Load the PDF page in Puppeteer
       await page.goto(`file://${path.resolve(pagePath)}`, { waitUntil: 'networkidle0' });
-      console.log(`Went to the page (round ${round})`);
+      console.log(`Processing page ${pageIndex} (round ${round})...`);
 
-      await delay(1000);  // Wait for 1 second
+      await delay(1000);  // Delay for stability
 
-      // Take a high-quality screenshot of the page
-      const imagePath = path.join(outputDir, `page-${i + 1}-round-${round}.png`);
-      await page.screenshot({ path: imagePath, fullPage: true, type: 'png' }); // PNG format for higher quality
-      console.log(`Saved screenshot of page ${i + 1} (round ${round}) at ${imagePath}`);
+      // Take a screenshot
+      const imagePath = path.join(outputDir, `page-${pageIndex}-round-${round}.png`);
+      await page.screenshot({ path: imagePath, fullPage: true, type: 'png' });
 
+      console.log(`Saved screenshot of page ${pageIndex} (round ${round}) at ${imagePath}`);
       screenshotFiles.push(imagePath);
-      await page.close(); // Close the page after screenshot
-    }
 
-    // Compare file sizes and keep the largest one
+      await page.close(); // Close the page after screenshot
+    });
+
+    // Wait for all rounds of screenshots to complete
+    await Promise.all(roundPromises);
+
+    // Find the largest file for the page and delete the rest
     const largestFile = await findLargestFile(screenshotFiles);
     imagePaths.push(largestFile);
 
     // Delete other files except for the largest one
     await deleteOtherFiles(screenshotFiles, largestFile);
-  }
+  });
+
+  // Wait for all page processing to complete
+  await Promise.all(pagePromises);
 
   await browser.close();
   console.log(`Finished PDF to image conversion for file: ${filePath}`);
-  return imagePaths; // Return the paths of the final images
+  return imagePaths; // Return the paths of the largest images
 }
 
 // Function to find the largest file by size
@@ -162,10 +165,19 @@ async function findLargestFile(files) {
 async function deleteOtherFiles(files, largestFile) {
   for (const file of files) {
     if (file !== largestFile) {
-      fs.unlinkSync(file); // Delete the file
-      console.log(`Deleted file ${file}`);
+      try {
+        fs.unlinkSync(file); // Delete the file
+        console.log(`Deleted file ${file}`);
+      } catch (err) {
+        console.error(`Error deleting file ${file}:`, err);
+      }
     }
   }
+}
+
+// Utility function to introduce a delay
+function delay(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 
