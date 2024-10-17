@@ -210,6 +210,9 @@ app.post('/upload', upload.array('files', 10), async (req, res) => {
     }));
 
     console.log('File upload and processing completed successfully!');
+
+    console.log("processing submitted data")
+    // run the image text getting thing on all the pdfs and stuff, make sure to do this in english and german and then feed it to chat gpt and see if it can decide which one to use
     res.send({
       status: 'success',
       message: `${req.files.length} file(s) uploaded successfully!`,
