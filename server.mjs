@@ -111,7 +111,7 @@ async function convertPdfToImages(filePath) {
         await page.setViewport({
           width: Math.ceil(pageWidth),
           height: Math.ceil(pageHeight),
-          deviceScaleFactor: 5
+          deviceScaleFactor: 7
         });
 
         // Load the PDF page in Puppeteer
