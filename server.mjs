@@ -3,12 +3,51 @@ import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
 import Tesseract from 'tesseract.js'
+import spellchecker from 'spellchecker'
 import puppeteer from 'puppeteer';
 import { PDFDocument } from 'pdf-lib'; // Import pdf-lib to handle splitting the PDF
 import pLimit from 'p-limit'; // Limit concurrency
 
 // For path resolving
 const __dirname = path.resolve();
+
+async function correctText(text) {
+  const misspelledLocations = await spellchecker.checkSpellingAsync(text);
+
+  console.log(misspelledLocations);
+
+  let correctedText = text; // Create a copy of the original text
+
+  if (misspelledLocations.length > 0) {
+    // Iterate backwards to avoid index shift when replacing words
+    for (let i = misspelledLocations.length - 1; i >= 0; i--) {
+      const start = misspelledLocations[i].start;
+      const end = misspelledLocations[i].end;
+
+      console.log("Start: ", start);
+      console.log("End: ", end);
+
+      // Correctly slice the misspelled word
+      let wrongword = text.slice(start, end);
+      console.log("Wrong word: ", wrongword);
+
+      // Get corrections for the misspelled word
+      const corrections = spellchecker.getCorrectionsForMisspelling(wrongword);
+      let correctedWord = wrongword; // Default to the wrong word if no correction is found
+
+      if (corrections.length > 0) {
+        correctedWord = corrections[0]; // Choose the first correction
+      }
+
+      // Replace the misspelled word in the correctedText string
+      correctedText = correctedText.slice(0, start) + correctedWord + correctedText.slice(end);
+
+      console.log("Corrected word: ", correctedWord);
+    }
+  }
+  return correctedText; // Explicitly return the corrected text
+}
+
 
 // Define storage for the files
 const storage = multer.diskStorage({
@@ -60,7 +99,7 @@ async function splitPdfPages(pdfBytes) {
     console.log("pdf width:", width, "pdf height:", height);
     width = width - 200;
     // height = height - 100;
-    
+
 
     const pdfData = await newPdfDoc.save();
     pages.push({ data: pdfData, width, height }); // Store page data and dimensions
@@ -189,58 +228,118 @@ function delay(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-function performOCR(imagePath){
-  return Tesseract.recognize(
-    imagePath,
-    'eng', // Specify the language (e.g., 'eng' for English)
-    {
-      logger: info => console.log(info), // Optional logger to show progress
-    }
-  )
-    .then(({ data: { text } }) => {
-      console.log('Recognized text:', text); // Output the recognized text
-      return text; // Return the recognized text for further use
-    })
-    .catch(err => {
-      console.error('Error during OCR:', err); // Handle errors
-      throw err; // Rethrow the error for error handling outside
-    });
+async function performOCR(imagePath) {
+  let textData = []
+  try {
+    const { data: { text } } = await Tesseract.recognize(
+      imagePath,
+      'eng', // Specify the language (e.g., 'eng' for English)
+      {
+        logger: info => console.log(info), // Optional logger to show progress
+      }
+    );
+    console.log('Recognized text:', text); // Output the recognized text
+    textData.push(imagePath);
+    textData.push(text);
+    return textData; // Return the recognized text
+  } catch (err) {
+    console.error('Error during OCR:', err); // Handle errors
+    throw err; // Rethrow the error
+  }
 }
 
-function dataProcessing(files){
-  console.log("data to be processed:", files)
-  let imagesToProcess = []
+async function correctTextWithDigits(text) {
+  // Split the text into words
+  const words = text.split(/\s+/);
 
-  console.log("number of files:", files.length)
+  let correctedText = text;
 
-  for(let i = 0; i < files.length; i++){
-    if(files[i].fileName){
-      const fileType = files[i].fileName.slice(-4);
-      if(fileType == '.pdf'){
-        if(files[i].images && files[i].images.length > 0){
-          console.log("Images exist")
-          for(let x = 0; x < files[i].images.length; x++){
-            imagesToProcess.push(files[i].images[x])
-          }
-        }
+  // Iterate over the words and check for misspellings or digits
+  for (let i = 0; i < words.length; i++) {
+    let word = words[i];
+
+    // If the word contains digits, handle it as potentially misspelled
+    if (containsDigits(word) || spellchecker.isMisspelled(word)) {
+      const corrections = spellchecker.getCorrectionsForMisspelling(word);
+      if (corrections.length > 0) {
+        const correctedWord = corrections[0];
+        // Replace the misspelled word in the text
+        correctedText = correctedText.replace(word, correctedWord);
       }
-      else {
-        console.log("not a pdf")
-        let fileLocation = files[i].filePath.slice(1)
-        imagesToProcess.push(fileLocation)
-      }
-
-
     }
   }
 
-  console.log(imagesToProcess);
+  return correctedText;
+}
+
+function containsDigits(word) {
+  return /\d/.test(word); // Check if the word contains any digits
+}
+
+async function dataProcessing(files) {
+  console.log("data to be processed:", files);
+  let imagesToProcess = [];
+
+  console.log("number of files:", files.length);
+
+  for (let i = 0; i < files.length; i++) {
+    if (files[i].fileName) {
+      const fileType = files[i].fileName.slice(-4);
+      if (fileType === '.pdf') {
+        if (files[i].images && files[i].images.length > 0) {
+          console.log("Images exist");
+          for (let x = 0; x < files[i].images.length; x++) {
+            imagesToProcess.push(files[i].images[x]);
+          }
+        }
+      } else {
+        console.log("not a pdf");
+        let fileLocation = files[i].filePath.slice(1); // Ensure proper handling of the file path
+        imagesToProcess.push(fileLocation);
+      }
+    }
+  }
+
+  let ocrData = []
+  for (let y = 0; y < imagesToProcess.length; y++) {
+    ocrData.push(await performOCR(imagesToProcess[y]))
+
+  }
+  console.log(ocrData)
+
+  const ocrText = "Th1sv is a sampl3 OCR extracted t3xt. h3ll-0";
+
+  // Split the text into words and correct each word
+  const cleanedText = ocrText.split(' ').map(word => {
+    if (spellchecker.isMisspelled(word)) {
+      const corrections = spellchecker.getCorrectionsForMisspelling(word);
+      console.log(corrections)
+      if (corrections.length > 0) {
+        return corrections[0]; // Replace with the first suggestion
+      }
+    }
+    return word;
+  }).join(' ');
+
+  console.log('Cleaned OCR Text:', cleanedText);
+
+  const text = "Th1s is a sampl3 OCR extracted t3xt. helloo";
+  let fixedText = await correctText(text);
+  console.log(fixedText);
+  fixedText = await correctTextWithDigits(text);
+  console.log(fixedText);
+  
+  
+
+  let printText = text.slice(17);
 
 
-
+  // console.log(printText)
 
   return;
 }
+
+
 
 
 const app = express();
@@ -250,27 +349,27 @@ app.post('/upload', upload.array('files', 10), async (req, res) => {
   console.log('Received file upload request...');
   try {
     const fileDetails = await Promise.all(req.files.map(async (file) => {
-      const filePath = `/uploads/${file.originalname}`;
-      console.log(`Processing file: ${file.originalname}`);
+      // Use the sanitized file name (which has dashes instead of spaces)
+      const sanitizedFileName = file.originalname.replace(/\s+/g, '-');
+      const filePath = `/uploads/${sanitizedFileName}`;
+      console.log(`Processing file: ${sanitizedFileName}`);
 
       // Check if the uploaded file is a PDF
       if (file.mimetype === 'application/pdf') {
-        console.log(`Converting PDF ${file.originalname} to images...`);
+        console.log(`Converting PDF ${sanitizedFileName} to images...`);
         const imagePaths = await convertPdfToImages(file.path); // Convert PDF pages to images
-        return { fileName: file.originalname, filePath: filePath, images: imagePaths };
+        return { fileName: sanitizedFileName, filePath: filePath, images: imagePaths };
       } else {
-        console.log(`File ${file.originalname} is not a PDF, skipping conversion.`);
-        return { fileName: file.originalname, filePath: filePath };
+        console.log(`File ${sanitizedFileName} is not a PDF, skipping conversion.`);
+        return { fileName: sanitizedFileName, filePath: filePath };
       }
     }));
 
     console.log('File upload and processing completed successfully!');
 
     console.log("processing submitted data")
-    dataProcessing(fileDetails);
-    
+    await dataProcessing(fileDetails);
 
-    // run the image text getting thing on all the pdfs and stuff, make sure to do this in english and german and then feed it to chat gpt and see if it can decide which one to use
     res.send({
       status: 'success',
       message: `${req.files.length} file(s) uploaded successfully!`,
@@ -285,6 +384,7 @@ app.post('/upload', upload.array('files', 10), async (req, res) => {
     });
   }
 });
+
 
 // Error handler for multer errors
 app.use((err, req, res, next) => {

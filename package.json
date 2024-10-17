@@ -23,6 +23,7 @@
     "pdf-poppler": "^0.2.1",
     "pdfjs-dist": "^4.7.76",
     "puppeteer": "^23.6.0",
+    "spellchecker": "^3.7.1",
     "tesseract.js": "^5.1.1"
   }
 }
