@@ -2,6 +2,7 @@ import express from 'express';
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
+import Tesseract from 'tesseract.js'
 import puppeteer from 'puppeteer';
 import { PDFDocument } from 'pdf-lib'; // Import pdf-lib to handle splitting the PDF
 import pLimit from 'p-limit'; // Limit concurrency
@@ -21,8 +22,9 @@ const storage = multer.diskStorage({
     cb(null, uploadPath); // specify the destination directory
   },
   filename: (req, file, cb) => {
-    console.log(`Saving file with original name: ${file.originalname}`);
-    cb(null, file.originalname); // Set the file name to be the original name
+    const sanitizedFileName = file.originalname.replace(/\s+/g, '-'); // Replace spaces with dashes
+    console.log(`Saving file with sanitized name: ${sanitizedFileName}`);
+    cb(null, sanitizedFileName); // Set the file name with spaces replaced by dashes
   }
 });
 
@@ -187,8 +189,56 @@ function delay(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+function performOCR(imagePath){
+  return Tesseract.recognize(
+    imagePath,
+    'eng', // Specify the language (e.g., 'eng' for English)
+    {
+      logger: info => console.log(info), // Optional logger to show progress
+    }
+  )
+    .then(({ data: { text } }) => {
+      console.log('Recognized text:', text); // Output the recognized text
+      return text; // Return the recognized text for further use
+    })
+    .catch(err => {
+      console.error('Error during OCR:', err); // Handle errors
+      throw err; // Rethrow the error for error handling outside
+    });
+}
+
 function dataProcessing(files){
   console.log("data to be processed:", files)
+  let imagesToProcess = []
+
+  console.log("number of files:", files.length)
+
+  for(let i = 0; i < files.length; i++){
+    if(files[i].fileName){
+      const fileType = files[i].fileName.slice(-4);
+      if(fileType == '.pdf'){
+        if(files[i].images && files[i].images.length > 0){
+          console.log("Images exist")
+          for(let x = 0; x < files[i].images.length; x++){
+            imagesToProcess.push(files[i].images[x])
+          }
+        }
+      }
+      else {
+        console.log("not a pdf")
+        let fileLocation = files[i].filePath.slice(1)
+        imagesToProcess.push(fileLocation)
+      }
+
+
+    }
+  }
+
+  console.log(imagesToProcess);
+
+
+
+
   return;
 }
 

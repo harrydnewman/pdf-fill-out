@@ -22,6 +22,7 @@
     "pdf-lib": "^1.17.1",
     "pdf-poppler": "^0.2.1",
     "pdfjs-dist": "^4.7.76",
-    "puppeteer": "^23.6.0"
+    "puppeteer": "^23.6.0",
+    "tesseract.js": "^5.1.1"
   }
 }
