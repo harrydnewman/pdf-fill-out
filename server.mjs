@@ -2,7 +2,8 @@ import express from 'express';
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
-import puppeteer from 'puppeteer'; // Import puppeteer
+import puppeteer from 'puppeteer';
+import { PDFDocument } from 'pdf-lib'; // Import pdf-lib to handle splitting the PDF
 
 // For path resolving
 const __dirname = path.resolve();
@@ -40,49 +41,134 @@ const upload = multer({
   }
 });
 
-// Function to convert PDF pages to images using Puppeteer
+// Function to split PDF into individual pages using pdf-lib and extract page dimensions
+async function splitPdfPages(pdfBytes) {
+  const pdfDoc = await PDFDocument.load(pdfBytes);
+  const numPages = pdfDoc.getPageCount();
+  const pages = [];
+
+  for (let i = 0; i < numPages; i++) {
+    const newPdfDoc = await PDFDocument.create();
+    const [copiedPage] = await newPdfDoc.copyPages(pdfDoc, [i]);
+    newPdfDoc.addPage(copiedPage);
+
+    const page = pdfDoc.getPage(i);
+    let { width, height } = page.getSize(); // Get page dimensions
+    console.log("pdf width:", width, "pdf height:", height)
+    width = width - 200;
+
+    const pdfData = await newPdfDoc.save();
+    pages.push({ data: pdfData, width, height }); // Store page data and dimensions
+  }
+
+  return pages; // Array of individual page PDFs with their dimensions
+}
+
+// Function to introduce a delay using setTimeout
+function delay(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 async function convertPdfToImages(filePath) {
   console.log(`Starting PDF to image conversion for file: ${filePath}`);
 
-  const browser = await puppeteer.launch(); // Launch Chromium
+  // Read the PDF
+  const pdfBytes = fs.readFileSync(filePath);
+  
+  // Split the PDF into individual pages
+  const pdfPages = await splitPdfPages(pdfBytes);
+  console.log(`PDF has ${pdfPages.length} pages.`);
+
+  const browser = await puppeteer.launch({ headless: false }); // Launch Chromium in visible mode
   console.log('Puppeteer browser launched...');
 
-  const page = await browser.newPage(); // Open a new page
   const outputDir = filePath.replace('.pdf', '_images');
-
   if (!fs.existsSync(outputDir)) {
     console.log(`Creating directory for image output: ${outputDir}`);
     fs.mkdirSync(outputDir, { recursive: true });
   }
 
-  await page.goto(`file://${path.resolve(filePath)}`, { waitUntil: 'networkidle0' });
-  console.log(`Opened PDF in Puppeteer: ${filePath}`);
+  const imagePaths = [];
 
-  const numPages = await page.pdf({ path: filePath }).then(async () => {
-    console.log('Getting dimensions of the PDF for screenshot...');
-    const dimensions = await page.evaluate(() => {
-      return {
-        width: document.body.scrollWidth,
-        height: document.body.scrollHeight
-      };
-    });
-    console.log(`PDF Dimensions - Width: ${dimensions.width}, Height: ${dimensions.height}`);
+  for (let i = 0; i < pdfPages.length; i++) {
+    console.log(`Rendering page ${i + 1} of the PDF...`);
 
-    const pages = [];
-    for (let i = 0; i < dimensions.height; i += dimensions.height) {
-      const imagePath = path.join(outputDir, `page-${i + 1}.png`);
-      console.log(`Taking screenshot for page ${i + 1} at path: ${imagePath}`);
-      await page.screenshot({ path: imagePath, clip: { x: 0, y: i, width: dimensions.width, height: dimensions.height } });
-      pages.push(imagePath);
+    const pageData = pdfPages[i].data;
+    const pageWidth = pdfPages[i].width;
+    const pageHeight = pdfPages[i].height;
+
+    // Save each split page as a separate file
+    const pagePath = path.join(outputDir, `page-${i + 1}.pdf`);
+    fs.writeFileSync(pagePath, pageData);
+
+    const screenshotFiles = [];
+
+    for (let round = 1; round <= 3; round++) {
+      const page = await browser.newPage();
+
+      // Set viewport to match the PDF page size and increase the resolution with deviceScaleFactor
+      await page.setViewport({
+        width: Math.ceil(pageWidth), // Match page width
+        height: Math.ceil(pageHeight), // Match page height
+        deviceScaleFactor: 2 // Increase the scale factor for higher quality
+      });
+
+      // Disable default PDF viewer to remove unnecessary elements
+      await page.goto(`file://${path.resolve(pagePath)}`, { waitUntil: 'networkidle0' });
+      console.log(`Went to the page (round ${round})`);
+
+      await delay(1000);  // Wait for 1 second
+
+      // Take a high-quality screenshot of the page
+      const imagePath = path.join(outputDir, `page-${i + 1}-round-${round}.png`);
+      await page.screenshot({ path: imagePath, fullPage: true, type: 'png' }); // PNG format for higher quality
+      console.log(`Saved screenshot of page ${i + 1} (round ${round}) at ${imagePath}`);
+
+      screenshotFiles.push(imagePath);
+      await page.close(); // Close the page after screenshot
     }
 
-    return pages.length;
-  });
+    // Compare file sizes and keep the largest one
+    const largestFile = await findLargestFile(screenshotFiles);
+    imagePaths.push(largestFile);
 
-  await browser.close(); // Close the browser
+    // Delete other files except for the largest one
+    await deleteOtherFiles(screenshotFiles, largestFile);
+  }
+
+  await browser.close();
   console.log(`Finished PDF to image conversion for file: ${filePath}`);
-  return numPages; // Return the number of images generated
+  return imagePaths; // Return the paths of the final images
 }
+
+// Function to find the largest file by size
+async function findLargestFile(files) {
+  let largestFile = files[0];
+  let largestFileSize = fs.statSync(files[0]).size;
+
+  for (let i = 1; i < files.length; i++) {
+    const fileSize = fs.statSync(files[i]).size;
+    if (fileSize > largestFileSize) {
+      largestFile = files[i];
+      largestFileSize = fileSize;
+    }
+  }
+
+  console.log(`Largest file is ${largestFile} with size ${largestFileSize} bytes.`);
+  return largestFile;
+}
+
+// Function to delete other files except for the largest one
+async function deleteOtherFiles(files, largestFile) {
+  for (const file of files) {
+    if (file !== largestFile) {
+      fs.unlinkSync(file); // Delete the file
+      console.log(`Deleted file ${file}`);
+    }
+  }
+}
+
+
 
 const app = express();
 
