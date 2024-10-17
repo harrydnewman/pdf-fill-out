@@ -4,6 +4,7 @@ import path from 'path';
 import fs from 'fs';
 import puppeteer from 'puppeteer';
 import { PDFDocument } from 'pdf-lib'; // Import pdf-lib to handle splitting the PDF
+import pLimit from 'p-limit'; // Limit concurrency
 
 // For path resolving
 const __dirname = path.resolve();
@@ -54,8 +55,9 @@ async function splitPdfPages(pdfBytes) {
 
     const page = pdfDoc.getPage(i);
     let { width, height } = page.getSize(); // Get page dimensions
-    console.log("pdf width:", width, "pdf height:", height)
+    console.log("pdf width:", width, "pdf height:", height);
     width = width - 200;
+    height = height - 200
 
     const pdfData = await newPdfDoc.save();
     pages.push({ data: pdfData, width, height }); // Store page data and dimensions
@@ -64,6 +66,7 @@ async function splitPdfPages(pdfBytes) {
   return pages; // Array of individual page PDFs with their dimensions
 }
 
+// Function to convert PDF pages to images
 async function convertPdfToImages(filePath) {
   console.log(`Starting PDF to image conversion for file: ${filePath}`);
 
@@ -74,7 +77,7 @@ async function convertPdfToImages(filePath) {
   const pdfPages = await splitPdfPages(pdfBytes);
   console.log(`PDF has ${pdfPages.length} pages.`);
 
-  const browser = await puppeteer.launch({ headless: false }); // Launch Chromium in visible mode
+  const browser = await puppeteer.launch({ headless: true }); // Launch Chromium in visible mode
   console.log('Puppeteer browser launched...');
 
   const outputDir = filePath.replace('.pdf', '_images');
@@ -84,57 +87,60 @@ async function convertPdfToImages(filePath) {
   }
 
   const imagePaths = [];
+  const limit = pLimit(3); // Limit concurrency to 10
 
-  // Process all pages concurrently
-  const pagePromises = pdfPages.map(async (pdfPage, i) => {
-    const pageIndex = i + 1;
-    const pageData = pdfPage.data;
-    const pageWidth = pdfPage.width;
-    const pageHeight = pdfPage.height;
+  // Process all pages with a concurrency limit
+  const pagePromises = pdfPages.map((pdfPage, i) =>
+    limit(async () => {
+      const pageIndex = i + 1;
+      const pageData = pdfPage.data;
+      const pageWidth = pdfPage.width;
+      const pageHeight = pdfPage.height;
 
-    // Save the page as a separate PDF file
-    const pagePath = path.join(outputDir, `page-${pageIndex}.pdf`);
-    fs.writeFileSync(pagePath, pageData);
+      // Save the page as a separate PDF file
+      const pagePath = path.join(outputDir, `page-${pageIndex}.pdf`);
+      fs.writeFileSync(pagePath, pageData);
 
-    const screenshotFiles = [];
+      const screenshotFiles = [];
 
-    // Process 3 rounds of screenshots for the current page concurrently
-    const roundPromises = [1, 2, 3].map(async (round) => {
-      const page = await browser.newPage();
+      // Process 3 rounds of screenshots for the current page concurrently
+      const roundPromises = [1, 2, 3].map(async (round) => {
+        const page = await browser.newPage();
 
-      // Set viewport to match the PDF page size
-      await page.setViewport({
-        width: Math.ceil(pageWidth),
-        height: Math.ceil(pageHeight),
-        deviceScaleFactor: 2
+        // Set viewport to match the PDF page size
+        await page.setViewport({
+          width: Math.ceil(pageWidth),
+          height: Math.ceil(pageHeight),
+          deviceScaleFactor: 5
+        });
+
+        // Load the PDF page in Puppeteer
+        await page.goto(`file://${path.resolve(pagePath)}`, { waitUntil: 'networkidle0' });
+        console.log(`Processing page ${pageIndex} (round ${round})...`);
+
+        await delay(300);  // Delay for stability
+
+        // Take a screenshot
+        const imagePath = path.join(outputDir, `page-${pageIndex}-round-${round}.png`);
+        await page.screenshot({ path: imagePath, fullPage: true, type: 'png' });
+
+        console.log(`Saved screenshot of page ${pageIndex} (round ${round}) at ${imagePath}`);
+        screenshotFiles.push(imagePath);
+
+        await page.close(); // Close the page after screenshot
       });
 
-      // Load the PDF page in Puppeteer
-      await page.goto(`file://${path.resolve(pagePath)}`, { waitUntil: 'networkidle0' });
-      console.log(`Processing page ${pageIndex} (round ${round})...`);
+      // Wait for all rounds of screenshots to complete
+      await Promise.all(roundPromises);
 
-      await delay(1000);  // Delay for stability
+      // Find the largest file for the page and delete the rest
+      const largestFile = await findLargestFile(screenshotFiles);
+      imagePaths.push(largestFile);
 
-      // Take a screenshot
-      const imagePath = path.join(outputDir, `page-${pageIndex}-round-${round}.png`);
-      await page.screenshot({ path: imagePath, fullPage: true, type: 'png' });
-
-      console.log(`Saved screenshot of page ${pageIndex} (round ${round}) at ${imagePath}`);
-      screenshotFiles.push(imagePath);
-
-      await page.close(); // Close the page after screenshot
-    });
-
-    // Wait for all rounds of screenshots to complete
-    await Promise.all(roundPromises);
-
-    // Find the largest file for the page and delete the rest
-    const largestFile = await findLargestFile(screenshotFiles);
-    imagePaths.push(largestFile);
-
-    // Delete other files except for the largest one
-    await deleteOtherFiles(screenshotFiles, largestFile);
-  });
+      // Delete other files except for the largest one
+      await deleteOtherFiles(screenshotFiles, largestFile);
+    })
+  );
 
   // Wait for all page processing to complete
   await Promise.all(pagePromises);
