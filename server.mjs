@@ -57,7 +57,8 @@ async function splitPdfPages(pdfBytes) {
     let { width, height } = page.getSize(); // Get page dimensions
     console.log("pdf width:", width, "pdf height:", height);
     width = width - 200;
-    height = height - 200
+    // height = height - 100;
+    
 
     const pdfData = await newPdfDoc.save();
     pages.push({ data: pdfData, width, height }); // Store page data and dimensions
@@ -87,7 +88,7 @@ async function convertPdfToImages(filePath) {
   }
 
   const imagePaths = [];
-  const limit = pLimit(3); // Limit concurrency to 10
+  const limit = pLimit(7); // Limit concurrency to 10
 
   // Process all pages with a concurrency limit
   const pagePromises = pdfPages.map((pdfPage, i) =>
@@ -111,7 +112,7 @@ async function convertPdfToImages(filePath) {
         await page.setViewport({
           width: Math.ceil(pageWidth),
           height: Math.ceil(pageHeight),
-          deviceScaleFactor: 7
+          deviceScaleFactor: 10
         });
 
         // Load the PDF page in Puppeteer
@@ -186,6 +187,10 @@ function delay(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
 
+function dataProcessing(files){
+  console.log("data to be processed:", files)
+  return;
+}
 
 
 const app = express();
@@ -212,6 +217,9 @@ app.post('/upload', upload.array('files', 10), async (req, res) => {
     console.log('File upload and processing completed successfully!');
 
     console.log("processing submitted data")
+    dataProcessing(fileDetails);
+    
+
     // run the image text getting thing on all the pdfs and stuff, make sure to do this in english and german and then feed it to chat gpt and see if it can decide which one to use
     res.send({
       status: 'success',
