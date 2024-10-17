@@ -2,48 +2,21 @@ import express from 'express';
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
-import Tesseract from 'tesseract.js'
-import spellchecker from 'spellchecker'
+import Tesseract from 'tesseract.js';
+import spellchecker from 'spellchecker';
 import puppeteer from 'puppeteer';
-import { PDFDocument } from 'pdf-lib'; // Import pdf-lib to handle splitting the PDF
-import pLimit from 'p-limit'; // Limit concurrency
+import { PDFDocument } from 'pdf-lib';
+import pLimit from 'p-limit';
+import Hunspell from 'hunspell-spellchecker'; // Import Hunspell for German spellchecking
+
+// Load Hunspell dictionaries for German
+const hunspell = new Hunspell();
+const aff = fs.readFileSync('./dictionaries/de_DE.aff'); // Path to German affix file
+const dic = fs.readFileSync('./dictionaries/de_DE.dic'); // Path to German dictionary file
+hunspell.dictionary = hunspell.parse({ aff, dic });
 
 // For path resolving
 const __dirname = path.resolve();
-
-async function correctText(text) {
-  const misspelledLocations = await spellchecker.checkSpellingAsync(text);
-
-
-
-  let correctedText = text; // Create a copy of the original text
-
-  if (misspelledLocations.length > 0) {
-    // Iterate backwards to avoid index shift when replacing words
-    for (let i = misspelledLocations.length - 1; i >= 0; i--) {
-      const start = misspelledLocations[i].start;
-      const end = misspelledLocations[i].end;
-
-      // Correctly slice the misspelled word
-      let wrongword = text.slice(start, end);
-
-      // Get corrections for the misspelled word
-      const corrections = spellchecker.getCorrectionsForMisspelling(wrongword);
-      let correctedWord = wrongword; // Default to the wrong word if no correction is found
-
-      if (corrections.length > 0) {
-        correctedWord = corrections[0]; // Choose the first correction
-      }
-
-      // Replace the misspelled word in the correctedText string
-      correctedText = correctedText.slice(0, start) + correctedWord + correctedText.slice(end);
-
-      console.log("Corrected word: ", correctedWord);
-    }
-  }
-  return correctedText; // Explicitly return the corrected text
-}
-
 
 // Define storage for the files
 const storage = multer.diskStorage({
@@ -79,7 +52,70 @@ const upload = multer({
   }
 });
 
-// Function to split PDF into individual pages using pdf-lib and extract page dimensions
+// Correct text based on the specified language
+async function correctText(text, language) {
+  let correctedText = text;
+  console.log(`Starting spell check for text in ${language}.`);
+  const misspelledLocations = await spellchecker.checkSpellingAsync(text);
+
+  if (misspelledLocations.length > 0) {
+    for (let i = misspelledLocations.length - 1; i >= 0; i--) {
+      const start = misspelledLocations[i].start;
+      const end = misspelledLocations[i].end;
+      let wrongword = text.slice(start, end);
+      let corrections = [];
+
+      if (language === 'eng') {
+        corrections = spellchecker.getCorrectionsForMisspelling(wrongword);
+      } else if (language === 'deu') {
+        corrections = hunspell.suggest(wrongword); // German correction
+      }
+
+      let correctedWord = wrongword;
+      if (corrections.length > 0) {
+        correctedWord = corrections[0];
+      }
+
+      correctedText = correctedText.slice(0, start) + correctedWord + correctedText.slice(end);
+    }
+  }
+  return correctedText;
+}
+
+// Correct text with digits for both languages
+async function correctTextWithDigits(text, language) {
+  console.log(`Correcting text with digits for language: ${language}`);
+  const wordRegex = /[a-zA-Z0-9]+[.,!?]?/g;
+  let correctedText = text;
+  const matches = text.match(wordRegex);
+
+  if (matches) {
+    for (let i = 0; i < matches.length; i++) {
+      let word = matches[i];
+      const punctuation = word.slice(-1).match(/[.,!?]/) ? word.slice(-1) : '';
+      const pureWord = punctuation ? word.slice(0, -1) : word;
+
+      let corrections = [];
+      if (containsDigits(pureWord) || (language === 'eng' && spellchecker.isMisspelled(pureWord))) {
+        corrections = spellchecker.getCorrectionsForMisspelling(pureWord);
+      } else if (language === 'deu' && containsDigits(pureWord)) {
+        corrections = hunspell.suggest(pureWord); // German correction with digits
+      }
+
+      if (corrections.length > 0) {
+        const correctedWord = corrections[0] + punctuation;
+        correctedText = correctedText.replace(word, correctedWord);
+      }
+    }
+  }
+  return correctedText;
+}
+
+function containsDigits(word) {
+  return /\d/.test(word); 
+}
+
+// Function to split PDF into individual pages using pdf-lib
 async function splitPdfPages(pdfBytes) {
   const pdfDoc = await PDFDocument.load(pdfBytes);
   const numPages = pdfDoc.getPageCount();
@@ -92,10 +128,6 @@ async function splitPdfPages(pdfBytes) {
 
     const page = pdfDoc.getPage(i);
     let { width, height } = page.getSize(); // Get page dimensions
-    console.log("pdf width:", width, "pdf height:", height);
-    width = width - 200;
-    // height = height - 100;
-
 
     const pdfData = await newPdfDoc.save();
     pages.push({ data: pdfData, width, height }); // Store page data and dimensions
@@ -115,7 +147,7 @@ async function convertPdfToImages(filePath) {
   const pdfPages = await splitPdfPages(pdfBytes);
   console.log(`PDF has ${pdfPages.length} pages.`);
 
-  const browser = await puppeteer.launch({ headless: true }); // Launch Chromium in visible mode
+  const browser = await puppeteer.launch({ headless: true });
   console.log('Puppeteer browser launched...');
 
   const outputDir = filePath.replace('.pdf', '_images');
@@ -125,7 +157,7 @@ async function convertPdfToImages(filePath) {
   }
 
   const imagePaths = [];
-  const limit = pLimit(7); // Limit concurrency to 10
+  const limit = pLimit(7); // Limit concurrency to 7
 
   // Process all pages with a concurrency limit
   const pagePromises = pdfPages.map((pdfPage, i) =>
@@ -141,42 +173,30 @@ async function convertPdfToImages(filePath) {
 
       const screenshotFiles = [];
 
-      // Process 3 rounds of screenshots for the current page concurrently
-      const roundPromises = [1, 2, 3].map(async (round) => {
-        const page = await browser.newPage();
+      // Process screenshots for the current page concurrently
+      const page = await browser.newPage();
 
-        // Set viewport to match the PDF page size
-        await page.setViewport({
-          width: Math.ceil(pageWidth),
-          height: Math.ceil(pageHeight),
-          deviceScaleFactor: 10
-        });
-
-        // Load the PDF page in Puppeteer
-        await page.goto(`file://${path.resolve(pagePath)}`, { waitUntil: 'networkidle0' });
-        console.log(`Processing page ${pageIndex} (round ${round})...`);
-
-        await delay(300);  // Delay for stability
-
-        // Take a screenshot
-        const imagePath = path.join(outputDir, `page-${pageIndex}-round-${round}.png`);
-        await page.screenshot({ path: imagePath, fullPage: true, type: 'png' });
-
-        console.log(`Saved screenshot of page ${pageIndex} (round ${round}) at ${imagePath}`);
-        screenshotFiles.push(imagePath);
-
-        await page.close(); // Close the page after screenshot
+      // Set viewport to match the PDF page size
+      await page.setViewport({
+        width: Math.ceil(pageWidth),
+        height: Math.ceil(pageHeight),
+        deviceScaleFactor: 2,
       });
 
-      // Wait for all rounds of screenshots to complete
-      await Promise.all(roundPromises);
+      // Load the PDF page in Puppeteer
+      await page.goto(`file://${path.resolve(pagePath)}`, { waitUntil: 'networkidle0' });
 
-      // Find the largest file for the page and delete the rest
-      const largestFile = await findLargestFile(screenshotFiles);
-      imagePaths.push(largestFile);
+      await delay(300);  // Delay for stability
 
-      // Delete other files except for the largest one
-      await deleteOtherFiles(screenshotFiles, largestFile);
+      // Take a screenshot
+      const imagePath = path.join(outputDir, `page-${pageIndex}.png`);
+      await page.screenshot({ path: imagePath, fullPage: true, type: 'png' });
+
+      console.log(`Saved screenshot of page ${pageIndex} at ${imagePath}`);
+      screenshotFiles.push(imagePath);
+
+      await page.close(); // Close the page after screenshot
+      imagePaths.push(imagePath); // Collect image paths
     })
   );
 
@@ -185,179 +205,87 @@ async function convertPdfToImages(filePath) {
 
   await browser.close();
   console.log(`Finished PDF to image conversion for file: ${filePath}`);
-  return imagePaths; // Return the paths of the largest images
+  return imagePaths; // Return the paths of the images
 }
 
-// Function to find the largest file by size
-async function findLargestFile(files) {
-  let largestFile = files[0];
-  let largestFileSize = fs.statSync(files[0]).size;
-
-  for (let i = 1; i < files.length; i++) {
-    const fileSize = fs.statSync(files[i]).size;
-    if (fileSize > largestFileSize) {
-      largestFile = files[i];
-      largestFileSize = fileSize;
-    }
-  }
-
-  console.log(`Largest file is ${largestFile} with size ${largestFileSize} bytes.`);
-  return largestFile;
-}
-
-// Function to delete other files except for the largest one
-async function deleteOtherFiles(files, largestFile) {
-  for (const file of files) {
-    if (file !== largestFile) {
-      try {
-        fs.unlinkSync(file); // Delete the file
-        console.log(`Deleted file ${file}`);
-      } catch (err) {
-        console.error(`Error deleting file ${file}:`, err);
-      }
-    }
-  }
-}
-
-// Utility function to introduce a delay
-function delay(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
-
-async function performOCR(imagePath) {
-  let textData = []
+// OCR processing for English and German
+async function performOCR(imagePath, language) {
+  let textData = [];
+  const lang = language === 'eng' ? 'eng' : 'deu'; // Define language based on input
+  
   try {
+    console.log(`Starting OCR for image: ${imagePath} in language: ${language}`);
     const { data: { text } } = await Tesseract.recognize(
       imagePath,
-      'eng', // Specify the language (e.g., 'eng' for English)
-      {
-        logger: info => console.log(info), // Optional logger to show progress
-      }
+      lang,
+      { logger: info => console.log(info) }
     );
-    console.log('Recognized text:', text); // Output the recognized text
     textData.push(imagePath);
     textData.push(text);
-    return textData; // Return the recognized text
+    textData.push(language)
+    return textData;
   } catch (err) {
-    console.error('Error during OCR:', err); // Handle errors
-    throw err; // Rethrow the error
+    console.error('Error during OCR:', err);
+    throw err;
   }
 }
 
-async function correctTextWithDigits(text) {
-  // Regex to match words while preserving punctuation
-  const wordRegex = /[a-zA-Z0-9]+[.,!?]?/g;
-  let correctedText = text;
-
-  // Match all words with optional punctuation
-  const matches = text.match(wordRegex);
-
-  // Iterate over the matches and check for misspellings or digits
-  if (matches) {
-    for (let i = 0; i < matches.length; i++) {
-      let word = matches[i];
-
-      // Extract punctuation at the end, if any
-      const punctuation = word.slice(-1).match(/[.,!?]/) ? word.slice(-1) : '';
-      const pureWord = punctuation ? word.slice(0, -1) : word;
-
-      // If the word contains digits or is misspelled, try to correct it
-      if (containsDigits(pureWord) || spellchecker.isMisspelled(pureWord)) {
-        const corrections = spellchecker.getCorrectionsForMisspelling(pureWord);
-        if (corrections.length > 0) {
-          const correctedWord = corrections[0] + punctuation; // Add the punctuation back
-          // Replace the misspelled word in the text
-          correctedText = correctedText.replace(word, correctedWord);
-        }
-      }
-    }
-  }
-
-  return correctedText;
-}
-
-function containsDigits(word) {
-  return /\d/.test(word); // Check if the word contains any digits
-}
-
-
+// Data processing with language selection per file
 async function dataProcessing(files) {
-  console.log("data to be processed:", files);
-  let imagesToProcess = [];
-
-  console.log("number of files:", files.length);
-
+  let ocrData = [];
   for (let i = 0; i < files.length; i++) {
-    if (files[i].fileName) {
-      const fileType = files[i].fileName.slice(-4);
-      if (fileType === '.pdf') {
-        if (files[i].images && files[i].images.length > 0) {
-          console.log("Images exist");
-          for (let x = 0; x < files[i].images.length; x++) {
-            imagesToProcess.push(files[i].images[x]);
-          }
-        }
-      } else {
-        console.log("not a pdf");
-        let fileLocation = files[i].filePath.slice(1); // Ensure proper handling of the file path
-        imagesToProcess.push(fileLocation);
-      }
+    const file = files[i];
+    console.log(`Processing file ${file.fileName} with language: ${file.language}`);
+    
+    let imagesToProcess = [];
+    if (file.images && file.images.length > 0) {
+      imagesToProcess = file.images;
+    } else {
+      imagesToProcess.push(file.filePath.slice(1)); // Remove leading '/' from filePath
+    }
+
+    for (let j = 0; j < imagesToProcess.length; j++) {
+      console.log(file.language)
+      ocrData.push(await performOCR(imagesToProcess[j], file.language));
     }
   }
+  console.log(ocrData)
 
-  let ocrData = []
-  for (let y = 0; y < imagesToProcess.length; y++) {
-    ocrData.push(await performOCR(imagesToProcess[y]))
 
+  for (let k = 0; k < ocrData.length; k++) {
+    let text = ocrData[k][1];
+    let language = ocrData[k][2]
+    console.log(language)
+    let fixedText = await correctText(text, language);
+    fixedText = await correctTextWithDigits(fixedText, language);
+    console.log(`Corrected text: ${fixedText}`);
   }
-  console.log(ocrData.length)
-  for(let y = 0; y < ocrData.length; y++){
-    
-    let text = ocrData[y][1];
-    console.log(text)
-    let fixedText = await correctText(text);
-    fixedText = await correctTextWithDigits(text);
-    console.log(fixedText);
-
-    
-  }
-
-
-  // const text = "Th1s is a sampl3 OCR extracted t3xt. helloo";
-  
 
   return;
 }
 
-
-
-
+// Route for file upload with individual language selection per file
 const app = express();
 
-// Set up a route for multiple file uploads
 app.post('/upload', upload.array('files', 10), async (req, res) => {
-  console.log('Received file upload request...');
   try {
-    const fileDetails = await Promise.all(req.files.map(async (file) => {
-      // Use the sanitized file name (which has dashes instead of spaces)
+    console.log('Starting file upload process...');
+
+    const fileDetails = await Promise.all(req.files.map(async (file, index) => {
       const sanitizedFileName = file.originalname.replace(/\s+/g, '-');
       const filePath = `/uploads/${sanitizedFileName}`;
-      console.log(`Processing file: ${sanitizedFileName}`);
+      const language = req.body[`language_${index}`] || 'eng'; // Get individual language per file
 
-      // Check if the uploaded file is a PDF
+      console.log(`File ${file.originalname} is being processed in language: ${language}`);
+
       if (file.mimetype === 'application/pdf') {
-        console.log(`Converting PDF ${sanitizedFileName} to images...`);
-        const imagePaths = await convertPdfToImages(file.path); // Convert PDF pages to images
-        return { fileName: sanitizedFileName, filePath: filePath, images: imagePaths };
+        const imagePaths = await convertPdfToImages(file.path);
+        return { fileName: sanitizedFileName, filePath: filePath, images: imagePaths, language };
       } else {
-        console.log(`File ${sanitizedFileName} is not a PDF, skipping conversion.`);
-        return { fileName: sanitizedFileName, filePath: filePath };
+        return { fileName: sanitizedFileName, filePath: filePath, language };
       }
     }));
 
-    console.log('File upload and processing completed successfully!');
-
-    console.log("processing submitted data")
     await dataProcessing(fileDetails);
 
     res.send({
@@ -375,8 +303,12 @@ app.post('/upload', upload.array('files', 10), async (req, res) => {
   }
 });
 
+// Utility function to introduce a delay
+function delay(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
 
-// Error handler for multer errors
+// Error handling and server setup
 app.use((err, req, res, next) => {
   if (err instanceof multer.MulterError) {
     console.error('Multer error:', err.message);
