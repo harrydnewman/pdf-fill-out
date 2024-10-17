@@ -318,6 +318,7 @@ async function dataProcessing(files) {
     let fixedText = await correctText(text);
     fixedText = await correctTextWithDigits(text);
     console.log(fixedText);
+
     
   }
 
