@@ -1,7 +1,8 @@
 {
   "name": "pdffillout",
   "version": "1.0.0",
-  "main": "server.js",
+  "main": "server.mjs",
+  "type": "module",
   "scripts": {
     "test": "echo \"Error: no test specified\" && exit 1",
     "start": "node server.js"
@@ -12,8 +13,14 @@
   "dependencies": {
     "express": "^4.21.1",
     "fs": "^0.0.1-security",
+    "install": "^0.13.0",
     "multer": "^1.4.5-lts.1",
     "nodemon": "^3.1.7",
-    "path": "^0.12.7"
+    "npm": "^10.9.0",
+    "path": "^0.12.7",
+    "pdf-lib": "^1.17.1",
+    "pdf-poppler": "^0.2.1",
+    "pdfjs-dist": "^4.7.76",
+    "puppeteer": "^23.6.0"
   }
 }
