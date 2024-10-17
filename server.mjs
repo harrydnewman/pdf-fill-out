@@ -14,7 +14,7 @@ const __dirname = path.resolve();
 async function correctText(text) {
   const misspelledLocations = await spellchecker.checkSpellingAsync(text);
 
-  console.log(misspelledLocations);
+
 
   let correctedText = text; // Create a copy of the original text
 
@@ -24,12 +24,8 @@ async function correctText(text) {
       const start = misspelledLocations[i].start;
       const end = misspelledLocations[i].end;
 
-      console.log("Start: ", start);
-      console.log("End: ", end);
-
       // Correctly slice the misspelled word
       let wrongword = text.slice(start, end);
-      console.log("Wrong word: ", wrongword);
 
       // Get corrections for the misspelled word
       const corrections = spellchecker.getCorrectionsForMisspelling(wrongword);
@@ -249,22 +245,30 @@ async function performOCR(imagePath) {
 }
 
 async function correctTextWithDigits(text) {
-  // Split the text into words
-  const words = text.split(/\s+/);
-
+  // Regex to match words while preserving punctuation
+  const wordRegex = /[a-zA-Z0-9]+[.,!?]?/g;
   let correctedText = text;
 
-  // Iterate over the words and check for misspellings or digits
-  for (let i = 0; i < words.length; i++) {
-    let word = words[i];
+  // Match all words with optional punctuation
+  const matches = text.match(wordRegex);
 
-    // If the word contains digits, handle it as potentially misspelled
-    if (containsDigits(word) || spellchecker.isMisspelled(word)) {
-      const corrections = spellchecker.getCorrectionsForMisspelling(word);
-      if (corrections.length > 0) {
-        const correctedWord = corrections[0];
-        // Replace the misspelled word in the text
-        correctedText = correctedText.replace(word, correctedWord);
+  // Iterate over the matches and check for misspellings or digits
+  if (matches) {
+    for (let i = 0; i < matches.length; i++) {
+      let word = matches[i];
+
+      // Extract punctuation at the end, if any
+      const punctuation = word.slice(-1).match(/[.,!?]/) ? word.slice(-1) : '';
+      const pureWord = punctuation ? word.slice(0, -1) : word;
+
+      // If the word contains digits or is misspelled, try to correct it
+      if (containsDigits(pureWord) || spellchecker.isMisspelled(pureWord)) {
+        const corrections = spellchecker.getCorrectionsForMisspelling(pureWord);
+        if (corrections.length > 0) {
+          const correctedWord = corrections[0] + punctuation; // Add the punctuation back
+          // Replace the misspelled word in the text
+          correctedText = correctedText.replace(word, correctedWord);
+        }
       }
     }
   }
@@ -275,6 +279,7 @@ async function correctTextWithDigits(text) {
 function containsDigits(word) {
   return /\d/.test(word); // Check if the word contains any digits
 }
+
 
 async function dataProcessing(files) {
   console.log("data to be processed:", files);
@@ -305,36 +310,20 @@ async function dataProcessing(files) {
     ocrData.push(await performOCR(imagesToProcess[y]))
 
   }
-  console.log(ocrData)
+  console.log(ocrData.length)
+  for(let y = 0; y < ocrData.length; y++){
+    
+    let text = ocrData[y][1];
+    console.log(text)
+    let fixedText = await correctText(text);
+    fixedText = await correctTextWithDigits(text);
+    console.log(fixedText);
+    
+  }
 
-  const ocrText = "Th1sv is a sampl3 OCR extracted t3xt. h3ll-0";
 
-  // Split the text into words and correct each word
-  const cleanedText = ocrText.split(' ').map(word => {
-    if (spellchecker.isMisspelled(word)) {
-      const corrections = spellchecker.getCorrectionsForMisspelling(word);
-      console.log(corrections)
-      if (corrections.length > 0) {
-        return corrections[0]; // Replace with the first suggestion
-      }
-    }
-    return word;
-  }).join(' ');
-
-  console.log('Cleaned OCR Text:', cleanedText);
-
-  const text = "Th1s is a sampl3 OCR extracted t3xt. helloo";
-  let fixedText = await correctText(text);
-  console.log(fixedText);
-  fixedText = await correctTextWithDigits(text);
-  console.log(fixedText);
+  // const text = "Th1s is a sampl3 OCR extracted t3xt. helloo";
   
-  
-
-  let printText = text.slice(17);
-
-
-  // console.log(printText)
 
   return;
 }
